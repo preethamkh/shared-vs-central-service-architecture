@@ -12,12 +12,12 @@ This document compares two approaches for integrating Mandrill transactional ema
 
 These are **independent systems** that each need to send transactional emails. They do NOT communicate with each other - they only share Mandrill as the email provider.
 
-| System | Technology | How it calls Mandrill |
+| System | Technology |
 |---|---|---|
-| **Assessment Portal** (Physio Portal) | ASP.NET Core | NuGet library (direct) |
-| **Accreditation Portal** (upcoming) | ASP.NET Core | NuGet library (direct) |
-| **D365** | Model-driven app | HTTP API (cannot use .NET library) |
-| **Power Automate** | Cloud flows | HTTP API (cannot use .NET library) |
+| **Assessment Portal** (Physio Portal) | ASP.NET Core |
+| **Accreditation Portal** (upcoming) | ASP.NET Core |
+| **D365** | Model-driven app |
+| **Power Automate** | Cloud flows |
 
 ---
 
@@ -54,6 +54,42 @@ Mandrill sends webhook events for:
 ### Why Webhooks Matter
 
 Without webhooks, you would have to **poll** Mandrill constantly to check if emails were delivered. With webhooks, Mandrill **pushes** the status to you in real-time.
+### Why Webhooks Matter
+
+Without webhooks, you would have to **poll** Mandrill constantly to check if emails were delivered. With webhooks, Mandrill **pushes** the status to you in real-time.
+
+### The Webhook Broadcasting Problem
+
+**Critical issue**: Mandrill sends ALL webhook events to ALL registered endpoints. This creates a significant problem in the shared library approach.
+
+**In the shared library approach:**
+- Assessment registers: `https://assessment.example.com/api/events/mandrill`
+- Accreditation registers: `https://accreditation.example.com/api/events/mandrill`
+- D365/PA HTTP API registers: `https://d365-pa.example.com/api/events/mandrill`
+
+When Assessment sends an email and it gets delivered:
+1. Mandrill fires the webhook event
+2. **ALL 3 endpoints receive the same event**
+3. Each system must check: "Is this MY email or someone else's?"
+4. Each system must filter out events that don't belong to it
+
+**This means duplicated filtering logic in every system.** Each system needs to:
+- Receive every webhook event from every system
+- Check the provider message ID against its own audit store
+- Ignore events that don't belong to it
+- Process only its own events
+
+**In the central service approach:**
+- Only ONE endpoint is registered: `https://central-api.example.com/api/v1/events/mandrill`
+- All events go to ONE handler
+- No filtering needed - the central service correlates all events
+
+| Approach | Webhook Endpoints Registered | Filtering Logic Required |
+|---|---|---|
+| **Shared Library** | 3 (one per system) | Duplicated in each system - each must filter out events from other systems |
+| **Central Service** | 1 | None - single handler processes all events |
+
+This is a **major operational burden** in the shared library approach that is completely eliminated by the central service.
 
 ---
 
@@ -195,6 +231,7 @@ This means Dataverse write-back logic is DUPLICATED across all 3 systems.
 | **Duplicated Audit Stores** | 3 separate audit stores (Assessment DB, Accreditation DB, D365/PA DB). Support must query each one separately to investigate issues. |
 | **No Central Correlation** | Correlation IDs are local to each system. Tracing a customer journey across systems is impossible without a unified view. |
 | **Duplicated Webhook Handling** | Assessment, Accreditation, and D365/PA HTTP API each implement Mandrill webhook validation independently. |
+| **Webhook Broadcasting** | Mandrill sends ALL events to ALL registered endpoints. Each system must filter out events from other systems - duplicated filtering logic. |
 | **Duplicated Dataverse Write-Back** | Each system must implement its own logic to create Dataverse Communication activities. |
 | **Template Mapping Duplication** | Template key to Mandrill slug mapping repeated in each system config. Adding a template requires updating all systems. |
 | **Multiple DB Hits** | Each system queries its own template mapping table. With N systems, that is N separate database connections and queries. |
@@ -335,7 +372,8 @@ sequenceDiagram
 | **Secret management** | Key in 3 places | Key in one place | **Central Service** |
 | **Audit unification** | Aggregate 3 stores | One store | **Central Service** |
 | **Correlation tracking** | Local only | End-to-end | **Central Service** |
-| **Webhook handling** | 3 implementations | One implementation | **Central Service** |
+| **Webhook handling** | 3 implementations + filtering logic | One implementation, no filtering | **Central Service** |
+| **Webhook broadcasting** | Each system receives ALL events, must filter | Single endpoint, no filtering needed | **Central Service** |
 | **Dataverse write-back** | 3 implementations | One implementation | **Central Service** |
 | **Template management** | Duplicated | Centralized | **Central Service** |
 | **Support UI complexity** | Cross-DB aggregation | Single query | **Central Service** |
@@ -489,7 +527,8 @@ The shared library approach **cannot serve D365 or Power Automate** - they need 
 Shared library for 4 systems:
 - 3 Mandrill credential configs (Assessment, Accreditation, D365/PA HTTP API)
 - 3 audit databases
-- 3 webhook receivers
+- 3 webhook endpoints registered with Mandrill (ALL receive ALL events)
+- 3 webhook filtering implementations (each must filter out other systems' events)
 - 3 Dataverse write-back implementations
 - 3 template mapping configs
 - 3 retry policies
@@ -497,7 +536,7 @@ Shared library for 4 systems:
 - N support UI data sources
 
 Central service:
-- 1 of each
+- 1 of each (no filtering needed)
 
 ### 3. The Unified Support UI
 
