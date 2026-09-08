@@ -1,10 +1,59 @@
-# Email Architecture Comparison: Shared Library vs Central Service
+ï»¿# Email Architecture Comparison: Shared Library vs Central Service
 
 ## Executive Summary
 
-This document compares two approaches for integrating Mandrill transactional email into organization applications (Assessment Portal, Accreditation Portal, D365, Power Automate).
+This document compares two approaches for integrating Mandrill transactional email into **4 separate, independent systems**: Assessment Portal (Physio Portal), Accreditation Portal (upcoming), D365, and Power Automate.
 
-**Recommendation: Central Email Service** â€” one HTTP API that all systems call, with Mandrill behind it.
+**Recommendation: Central Email Service** - one HTTP API that all systems call, with Mandrill behind it.
+
+---
+
+## The Four Systems
+
+These are **independent systems** that each need to send transactional emails. They do NOT communicate with each other - they only share Mandrill as the email provider.
+
+| System | Technology | How it calls Mandrill |
+|---|---|---|
+| **Assessment Portal** (Physio Portal) | ASP.NET Core | NuGet library (direct) |
+| **Accreditation Portal** (upcoming) | ASP.NET Core | NuGet library (direct) |
+| **D365** | Model-driven app | HTTP API (cannot use .NET library) |
+| **Power Automate** | Cloud flows | HTTP API (cannot use .NET library) |
+
+---
+
+## What is a Webhook?
+
+A webhook is a **callback** - instead of you polling Mandrill for status updates, **Mandrill calls YOU** when something happens.
+
+### How It Works
+
+```
+Step 1: You register a webhook URL with Mandrill
+        "POST to https://yourapp.com/api/events/mandrill"
+
+Step 2: Mandrill sends an email, it gets delivered
+
+Step 3: Mandrill makes an HTTP POST to YOUR endpoint:
+        POST https://yourapp.com/api/events/mandrill
+        { "event": "delivered", "email": "user@example.com", "_id": "abc123" }
+
+Step 4: Your endpoint receives it, updates your audit store
+```
+
+**Key insight**: The arrow goes FROM Mandrill TO your app. Your app does not call the webhook - Mandrill does.
+
+### Webhook Events
+
+Mandrill sends webhook events for:
+- **delivered** - email was delivered to the recipient
+- **bounced** - email bounced (invalid address)
+- **rejected** - email was rejected by Mandrill
+- **opened** - recipient opened the email
+- **clicked** - recipient clicked a link in the email
+
+### Why Webhooks Matter
+
+Without webhooks, you would have to **poll** Mandrill constantly to check if emails were delivered. With webhooks, Mandrill **pushes** the status to you in real-time.
 
 ---
 
@@ -14,71 +63,150 @@ This document compares two approaches for integrating Mandrill transactional ema
 
 ```mermaid
 flowchart TB
-    subgraph SharedLibrary["Shared Library Approach â€” Distributed"]
+    subgraph Assessment["Assessment Portal (Physio Portal)"]
         direction TB
-        AP["Assessment Portal<br/>ASP.NET Core"]
-        AC["Accreditation Portal<br/>ASP.NET Core"]
-        D365["D365 / Power Automate<br/>HTTP/Connector"]
-        NU1["TransactionalEmail NuGet<br/>(bundled in each app)"]
-        NU2["TransactionalEmail NuGet<br/>(bundled in each app)"]
-        HTTP["HTTP Adapter<br/>(required for D365/PA)"]
-        M["Mandrill API"]
-        AP --> NU1
-        AC --> NU2
-        D365 --> HTTP
-        NU1 --> M
-        NU2 --> M
-        HTTP --> M
-        M --> WH1["Webhook<br/>(Assessment)"]
-        M --> WH2["Webhook<br/>(Accreditation)"]
-        M --> WH3["Webhook<br/>(D365/PA)"]
-        WH1 --> AP
-        WH2 --> AC
-        WH3 --> D365
-        NU1 --> AS["Assessment<br/>audit store"]
-        NU2 --> CS["Accreditation<br/>audit store"]
-        HTTP --> DS["D365/PA<br/>audit store"]
-        AS --> CRM1["Dataverse"]
-        CS --> CRM2["Dataverse"]
-        DS --> CRM3["Dataverse"]
-        AS --> UI["Unified UI<br/>(must aggregate<br/>all stores)"]
-        CS --> UI
-        DS --> UI
+        AP["ASP.NET Core App"]
+        NU1["TransactionalEmail NuGet"]
+        M1["Mandrill API"]
+        WH1["Webhook Endpoint<br/>(you host this)"]
+        AS["Assessment Audit Store<br/>(database)"]
+        CRM1["Dataverse"]
+
+        AP -->|"calls"| NU1
+        NU1 -->|"sends email"| M1
+        M1 -.->|"CALLS BACK<br/>(webhook)"| WH1
+        WH1 -.->|"updates"| AS
+        AP -.->|"must implement<br/>write-back"| CRM1
     end
+
+    subgraph Accreditation["Accreditation Portal (Upcoming)"]
+        direction TB
+        AC["ASP.NET Core App"]
+        NU2["TransactionalEmail NuGet"]
+        M2["Mandrill API"]
+        WH2["Webhook Endpoint<br/>(you host this)"]
+        CS["Accreditation Audit Store<br/>(database)"]
+        CRM2["Dataverse"]
+
+        AC -->|"calls"| NU2
+        NU2 -->|"sends email"| M2
+        M2 -.->|"CALLS BACK<br/>(webhook)"| WH2
+        WH2 -.->|"updates"| CS
+        AC -.->|"must implement<br/>write-back"| CRM2
+    end
+
+    subgraph D365PA["D365 / Power Automate"]
+        direction TB
+        D365["D365"]
+        PA["Power Automate"]
+        HTTP["HTTP API<br/>(App Service)"]
+        M3["Mandrill API"]
+        WH3["Webhook Endpoint<br/>(you host this)"]
+        DS["D365/PA Audit Store<br/>(database)"]
+        CRM3["Dataverse"]
+
+        D365 -->|"calls"| HTTP
+        PA -->|"calls"| HTTP
+        HTTP -->|"sends email"| M3
+        M3 -.->|"CALLS BACK<br/>(webhook)"| WH3
+        WH3 -.->|"updates"| DS
+        HTTP -.->|"must implement<br/>write-back"| CRM3
+    end
+
+    style Assessment fill:#e1f5fe,stroke:#01579b
+    style Accreditation fill:#f3e5f5,stroke:#4a148c
+    style D365PA fill:#fff3e0,stroke:#e65100
 ```
 
 ### How It Works
 
-Each .NET application bundles a **NuGet package** (`TransactionalEmail`) that:
-1. Contains the Mandrill API client
-2. Reads Mandrill credentials from its own config
-3. Sends emails directly to Mandrill
-4. Writes to its own audit store
-5. Handles Mandrill webhooks independently
+Each system **independently** sends to Mandrill:
 
-### The Critical Flaw: D365 and Power Automate Cannot Use a .NET Library
+1. **Assessment Portal** -> bundles `TransactionalEmail` NuGet -> calls Mandrill directly
+2. **Accreditation Portal** -> bundles `TransactionalEmail` NuGet -> calls Mandrill directly
+3. **D365** -> calls HTTP API (hosted on App Service) -> calls Mandrill
+4. **Power Automate** -> calls HTTP API (same App Service) -> calls Mandrill
 
-**D365 and Power Automate cannot load a .NET NuGet package.** They need an HTTP endpoint. So the shared library approach **still requires building an HTTP API** for non-.NET callers.
+Each system has:
+- Its **own** Mandrill API key in config
+- Its **own** audit store (separate database)
+- Its **own** webhook endpoint (that Mandrill calls back)
+- Its **own** template mapping configuration
+- Its **own** Dataverse write-back logic (must be implemented separately)
+
+### Webhook Flow Detail
+
+For EACH system, the webhook flow is:
+
+```
+1. Your app sends email to Mandrill
+2. Mandrill delivers email to recipient
+3. Mandrill makes HTTP POST to YOUR webhook endpoint:
+   POST https://assessment.example.com/api/events/mandrill
+   { "event": "delivered", "email": "user@example.com" }
+4. Your webhook endpoint validates the request (security)
+5. Your webhook endpoint updates your audit store
+```
+
+**In the shared library approach, EACH system must implement steps 3-5 independently.**
+
+### The Critical Flaw: D365 and Power Automate Need HTTP
+
+**D365 and Power Automate cannot load a .NET NuGet package.** They need an HTTP endpoint. So the shared library approach **still requires building and hosting an HTTP API** for non-.NET callers.
 
 This means you end up building:
-- The shared NuGet library (for .NET apps)
-- **PLUS** an HTTP API (for D365/PA)
+- The shared NuGet library (for Assessment + Accreditation)
+- **PLUS** an HTTP API hosted on Azure App Service (for D365 + Power Automate)
 - **PLUS** the Mandrill integration in both places
+
+### Where Does the D365/PA HTTP API Sit?
+
+**Yes, it must be hosted on Azure (or similar cloud).** It requires:
+- An **Azure App Service** (or Azure Function) to host the HTTP endpoint
+- The Mandrill API client code
+- Its own audit store
+- Its own webhook endpoint
+- Its own Dataverse write-back logic
+
+So the shared library approach **does NOT eliminate Azure infrastructure** - it just distributes it differently. You still need to provision and maintain an App Service for the D365/PA HTTP API.
+
+### Dataverse Write-Back
+
+**Important**: The audit store does NOT automatically write to Dataverse. Each application must implement its own Dataverse write-back logic:
+
+```
+Assessment Portal -> sends email -> Mandrill delivers -> webhook received
+    -> Assessment Portal must create Dataverse Communication activity
+
+Accreditation Portal -> sends email -> Mandrill delivers -> webhook received
+    -> Accreditation Portal must create Dataverse Communication activity
+
+D365/PA HTTP API -> sends email -> Mandrill delivers -> webhook received
+    -> D365/PA HTTP API must create Dataverse Communication activity
+
+This means Dataverse write-back logic is DUPLICATED across all 3 systems.
+```
 
 ### Pain Points
 
 | Issue | Impact |
 |---|---|
-| **Secret Sprawl** | Mandrill API key stored in EVERY application's config. Rotation requires updating all apps simultaneously. |
-| **Duplicated Audit Stores** | Each app has its own audit database/table. Support must query each one separately to investigate issues. |
-| **No Central Correlation** | Correlation IDs are local to each app. Tracing a customer journey across systems is impossible without a unified view. |
-| **Duplicated Webhook Handling** | Each app must implement Mandrill webhook validation and processing independently. |
-| **Template Mapping Duplication** | Template key â†’ Mandrill slug mapping is repeated in each app's config. Adding a template requires updating all apps. |
-| **Multiple DB Hits** | Each app queries its own template mapping table. With N apps, that's N separate database connections and queries. |
-| **Version Drift Risk** | NuGet package versions can diverge across apps. One app might use Mandrill client v1 while another uses v2. |
-| **Unified UI Complexity** | Building a support UI requires aggregating data from ALL application databases â€” cross-DB queries, data transformation, pagination across sources. |
-| **Blast Radius of Changes** | A Mandrill API change requires updating and redeploying EVERY application. |
-| **Inconsistent Retry Logic** | Each app implements its own retry policy. Some might retry 3 times, others 5. No consistency. |
+| **Secret Sprawl** | Mandrill API key stored in Assessment, Accreditation, AND the D365/PA HTTP API. Rotation requires updating all 3 places simultaneously. |
+| **Duplicated Audit Stores** | 3 separate audit stores (Assessment DB, Accreditation DB, D365/PA DB). Support must query each one separately to investigate issues. |
+| **No Central Correlation** | Correlation IDs are local to each system. Tracing a customer journey across systems is impossible without a unified view. |
+| **Duplicated Webhook Handling** | Assessment, Accreditation, and D365/PA HTTP API each implement Mandrill webhook validation independently. |
+| **Duplicated Dataverse Write-Back** | Each system must implement its own logic to create Dataverse Communication activities. |
+| **Template Mapping Duplication** | Template key to Mandrill slug mapping repeated in each system config. Adding a template requires updating all systems. |
+| **Multiple DB Hits** | Each system queries its own template mapping table. With N systems, that is N separate database connections and queries. |
+| **Version Drift Risk** | NuGet package versions can diverge. Assessment might use Mandrill client v1 while Accreditation uses v2. |
+| **Unified UI Complexity** | Building a support UI requires aggregating data from ALL 3 databases - cross-DB queries, data transformation, pagination across sources. |
+| **Blast Radius of Changes** | A Mandrill API change requires updating and redeploying Assessment, Accreditation, AND the D365/PA HTTP API. |
+| **Inconsistent Retry Logic** | Each system implements its own retry policy. Some might retry 3 times, others 5. No consistency. |
+
+### What the Shared Library Gets Right
+
+- **Runtime independence**: If Assessment is down, Accreditation and D365/PA can still send (but this is also true with central service if callers implement an outbox)
+- **Simplicity for single-app scenarios**: If you only had ONE .NET app and no D365/PA, a library would suffice
 
 ---
 
@@ -88,26 +216,41 @@ This means you end up building:
 
 ```mermaid
 flowchart TB
-    subgraph CentralService["Central Email Service Approach"]
-        direction TB
-        AP["Assessment Portal"]
-        AC["Accreditation Portal"]
+    subgraph Callers["Caller Systems (Independent)"]
+        direction LR
+        AP["Assessment Portal<br/>(Physio Portal)"]
+        AC["Accreditation Portal<br/>(Upcoming)"]
         D365["D365"]
         PA["Power Automate"]
-        API["Central Email API<br/>ASP.NET Core<br/>Azure App Service"]
-        AP --> API
-        AC --> API
-        D365 --> API
-        PA --> API
-        API --> SB["Azure Service Bus<br/>email-events queue"]
-        SB --> FN["Azure Function<br/>Consumption Plan"]
-        FN --> M["Mandrill API"]
-        M -. webhook .-> FN
-        FN --> SQL["Azure SQL<br/>Email Audit<br/>(central store)"]
-        FN --> CRM["Dataverse<br/>Communication Activity"]
-        SQL --> UI["Unified Support UI<br/>authenticated, RBAC"]
-        API -. direct send<br/>(demo mode) .-> M
     end
+
+    subgraph CentralService["Central Email Service (One Service)"]
+        direction TB
+        API["Central Email API<br/>ASP.NET Core<br/>Azure App Service"]
+        SB["Azure Service Bus<br/>email-events queue"]
+        FN["Azure Function<br/>Consumption Plan"]
+        M["Mandrill API"]
+        WH["Webhook Endpoint<br/>(ONE endpoint for all)"]
+        SQL["Azure SQL<br/>Email Audit<br/>(ONE central store)"]
+        CRM["Dataverse"]
+
+        API -->|"enqueues"| SB
+        SB -->|"dequeues"| FN
+        FN -->|"sends email"| M
+        M -.->|"CALLS BACK<br/>(webhook)"| WH
+        WH -.->|"updates"| SQL
+        FN -.->|"writes"| CRM
+    end
+
+    AP -->|"HTTP POST"| API
+    AC -->|"HTTP POST"| API
+    D365 -->|"HTTP POST"| API
+    PA -->|"HTTP POST"| API
+
+    SQL --> UI["Unified Support UI<br/>authenticated, RBAC"]
+
+    style Callers fill:#e8f5e9,stroke:#1b5e20
+    style CentralService fill:#e3f2fd,stroke:#0d47a1
 ```
 
 ### Component Details
@@ -115,11 +258,29 @@ flowchart TB
 | Component | Technology | Responsibility |
 |---|---|---|
 | **Central Email API** | ASP.NET Core on Azure App Service | Accepts validated email requests, assigns correlation ID, enqueues to Service Bus |
-| **Service Bus** | Azure Service Bus Queue | Buffers work, enables retry/DLQ, decouples API from worker |
+| **Service Bus** | Azure Service Bus Queue `email-events` | Buffers work, enables retry/DLQ, decouples API from worker |
 | **Azure Function** | .NET Isolated, Consumption Plan | Processes queue: sends via Mandrill, writes audit, handles webhooks |
-| **Audit Store** | Azure SQL (or Table Storage for demo) | Central, searchable record of all emails across all systems |
+| **Audit Store** | Azure SQL (or Table Storage for demo) | Central, searchable record of ALL emails across ALL systems |
 | **Support UI** | Authenticated web page/API | Search by recipient, template, source, correlation ID, status |
 | **D365 Write-back** | Async via Function | Creates Dataverse Communication activity against Contact |
+
+### Webhook Flow Detail
+
+In the central service, there is only ONE webhook flow:
+
+```
+1. Any system sends email via Central API
+2. Function sends to Mandrill
+3. Mandrill delivers email to recipient
+4. Mandrill makes HTTP POST to the ONE webhook endpoint:
+   POST https://central-api.example.com/api/v1/events/mandrill
+   { "event": "delivered", "email": "user@example.com" }
+5. Webhook endpoint validates the request (security)
+6. Webhook endpoint updates the ONE central audit store
+7. Function writes Dataverse Communication activity (ONE place)
+
+All webhook handling is in ONE place. No duplication.
+```
 
 ### Data Flow (End-to-End)
 
@@ -154,12 +315,14 @@ sequenceDiagram
 | **Unified Audit** | All systems write to ONE audit store. Support searches one place. |
 | **Central Correlation** | Correlation ID assigned at API level, flows through entire pipeline. |
 | **Single Webhook Handler** | ONE endpoint receives Mandrill webhooks, correlates using provider message ID. |
+| **Single Dataverse Write-Back** | ONE function writes to Dataverse. No duplication. |
 | **Template Mapping** | Central registry. Add a template once, all systems can use it immediately. |
 | **Single DB Hit** | One query to one audit store. No cross-DB aggregation needed. |
 | **Unified UI** | One data source = simple queries. Search, filter, export from one place. |
 | **Consistent Retry** | Service Bus retry policy + DLQ. Same behavior for all callers. |
 | **D365/PA Integration** | HTTP API is the native integration point. No adapter needed. |
 | **Blast Radius** | Mandrill changes affect ONE service. Callers are unaffected. |
+| **Scalability** | API, Function, and SQL scale independently. Queue absorbs load spikes. |
 
 ---
 
@@ -169,17 +332,18 @@ sequenceDiagram
 |---|---|---|---|
 | **Initial setup complexity** | Low (just add NuGet) | Medium (provision services) | Shared Library |
 | **D365/PA support** | Needs separate HTTP API anyway | Native HTTP API | **Central Service** |
-| **Secret management** | Key in every app | Key in one place | **Central Service** |
-| **Audit unification** | Aggregate N stores | One store | **Central Service** |
+| **Secret management** | Key in 3 places | Key in one place | **Central Service** |
+| **Audit unification** | Aggregate 3 stores | One store | **Central Service** |
 | **Correlation tracking** | Local only | End-to-end | **Central Service** |
-| **Webhook handling** | N implementations | One implementation | **Central Service** |
+| **Webhook handling** | 3 implementations | One implementation | **Central Service** |
+| **Dataverse write-back** | 3 implementations | One implementation | **Central Service** |
 | **Template management** | Duplicated | Centralized | **Central Service** |
 | **Support UI complexity** | Cross-DB aggregation | Single query | **Central Service** |
-| **Operational overhead** | High (N apps to maintain) | Low (one service) | **Central Service** |
-| **Runtime independence** | Apps independent | API is single dependency | Shared Library |
+| **Operational overhead** | High (3 things to maintain) | Low (one service) | **Central Service** |
+| **Runtime independence** | Systems independent | API is single dependency | Shared Library |
 | **Retry consistency** | Inconsistent | Consistent via Service Bus | **Central Service** |
-| **Cost** | N audit stores + N webhook endpoints | One of each | **Central Service** |
-| **Vendor lock-in** | Harder to change (N integrations) | Easier (one integration) | **Central Service** |
+| **Cost** | 3 audit stores + 3 webhook endpoints | One of each | **Central Service** |
+| **Vendor lock-in** | Harder to change (3 integrations) | Easier (one integration) | **Central Service** |
 
 ---
 
@@ -189,10 +353,12 @@ sequenceDiagram
 
 | Component | Qty | Cost Each | Total |
 |---|---|---|---|
-| Audit database (Basic SQL) | 3 (one per app) | ~$5/mo | ~$15/mo |
-| Webhook endpoints (App Service) | 3 | ~$13/mo | ~$39/mo |
+| Assessment audit DB (Basic SQL) | 1 | ~$5/mo | ~$5/mo |
+| Accreditation audit DB (Basic SQL) | 1 | ~$5/mo | ~$5/mo |
+| D365/PA HTTP API (App Service B1) | 1 | ~$13/mo | ~$13/mo |
+| D365/PA audit DB (Basic SQL) | 1 | ~$5/mo | ~$5/mo |
 | Monitoring (App Insights) | 3 | ~$2/mo | ~$6/mo |
-| **Total** | | | **~$60/mo** |
+| **Total** | | | **~$34/mo** |
 
 ### Central Service (Monthly, Production Estimate)
 
@@ -206,7 +372,109 @@ sequenceDiagram
 | App Insights | 1 | ~$2/mo | ~$2/mo |
 | **Total** | | | **~$20-26/mo** |
 
-**Central service costs ~50-65% less** at production scale.
+**Central service costs ~25-40% less** at production scale.
+
+---
+
+## Addressing the Single Point of Failure Concern
+
+### The Solution Architect Argument
+
+> "If the central email service goes down, ALL systems cannot send emails. With the shared library approach, if one system goes down, the others continue to function."
+
+### Why This Argument is Flawed
+
+**You are mixing two different things:**
+
+1. **If Mandrill goes down** -> ALL systems fail in BOTH approaches. Period. There is no workaround - if the email provider is down, no one can send email.
+
+2. **If one caller system goes down** (e.g., Assessment Portal has an issue):
+   - In shared library: Assessment cannot send (it is down), but Accreditation and D365/PA can
+   - In central service: Assessment cannot send (it is down), but Accreditation and D365/PA can
+   - **Same outcome** - the down system has the issue, not the email platform
+
+3. **If the central email service goes down**:
+   - This is equivalent to Mandrill going down - all systems are affected equally
+   - In shared library, if Mandrill goes down, all systems are ALSO affected equally
+   - **Same outcome** - the email platform is down, no one can send
+
+### The Real Question: How to Make the Central Service Resilient
+
+The central service is a **single service that can be made highly available**. Here is how:
+
+#### 1. Caller-Side Outbox Pattern (Primary Defense)
+
+```mermaid
+flowchart LR
+    subgraph Caller["Caller System"]
+        APP["Application"]
+        OUTBOX["Pending/Outbox<br/>Record"]
+        RETRY["Retry Logic"]
+        APP --> OUTBOX
+        OUTBOX --> RETRY
+    end
+    OUTBOX -->|"retry when API returns"| API["Central API"]
+```
+
+Each caller writes to a pending/outbox record BEFORE calling the API. If the API is down:
+- The pending record stays in the caller database
+- Retry logic attempts to send when the API recovers
+- No email request is lost
+
+**This is the same pattern used in the shared library approach for reliability.**
+
+#### 2. Multiple Instances + Load Balancer
+
+Azure App Service supports multiple instances behind a load balancer:
+- If one instance fails, others handle traffic
+- Auto-healing replaces unhealthy instances
+- Deploy across availability zones for zone redundancy
+
+#### 3. Service Bus Durability
+
+Messages queued in Service Bus **persist** even if the API is temporarily down:
+- Messages wait in the queue until a worker picks them up
+- Built-in retry policy (e.g., retry 3 times with delays)
+- Dead-letter queue for messages that fail all retries
+
+#### 4. Break-Glass Fallback (Emergency Only)
+
+```mermaid
+flowchart TB
+    API["Central API available?"]
+    YES["Use Central API<br/>(normal flow)"]
+    NO["Critical emergency only"]
+    BG["Break-glass: Direct Mandrill send"]
+    RECONCILE["Reconcile result into<br/>central audit + CRM later"]
+    API -->|Yes| YES
+    API -->|No| NO
+    NO --> BG
+    BG --> RECONCILE
+```
+
+For critical systems (e.g., emergency communications), have a backup direct Mandrill path:
+- Only used when central service is confirmed down
+- Results are reconciled into central audit when service recovers
+- This is an **exception handler**, not the normal flow
+
+#### 5. Health Monitoring + Auto-Recovery
+
+- Application Insights monitors API health
+- Azure auto-healing restarts unhealthy instances
+- Alerts notify operations team of issues
+- Deployment slots enable zero-downtime updates
+
+### Why Central Service is Actually MORE Resilient
+
+| Scenario | Shared Library | Central Service |
+|---|---|---|
+| **Mandrill down** | All systems fail | All systems fail |
+| **Assessment down** | Assessment fails, others OK | Assessment fails, others OK |
+| **Central service down** | N/A | All systems affected (same as Mandrill down) |
+| **Assessment NuGet bug** | Assessment fails, others OK | Assessment unaffected (bug is in central service) |
+| **Mandrill API change** | Update 3 systems, redeploy all | Update 1 service, callers unaffected |
+
+**Key insight**: In the shared library approach, a bug in the NuGet code affects each system independently. In the central service approach, the service is ONE thing to monitor, maintain, and make highly available. You can apply enterprise-grade HA patterns (multi-instance, auto-healing, deployment slots) to ONE service instead of hoping each system implements them correctly.
 
 ---
 
@@ -214,19 +482,42 @@ sequenceDiagram
 
 ### 1. D365/Power Automate Force the Issue
 
-The shared library approach **cannot serve D365 or Power Automate** — they need HTTP. So you end up building both a NuGet library AND an HTTP API, with Mandrill integration in both. The central service''s HTTP API is the integration point for everyone.
+The shared library approach **cannot serve D365 or Power Automate** - they need HTTP. So you end up building both a NuGet library AND an HTTP API, with Mandrill integration in both. The central service HTTP API is the integration point for everyone.
 
 ### 2. The "Moving Parts" Problem
 
-Shared library for 3 systems: 3 credential configs, 3 audit DBs, 3 webhook receivers, 3 template configs, 3 retry policies, 3 monitoring setups, N UI data sources. Central service: 1 of each.
+Shared library for 4 systems:
+- 3 Mandrill credential configs (Assessment, Accreditation, D365/PA HTTP API)
+- 3 audit databases
+- 3 webhook receivers
+- 3 Dataverse write-back implementations
+- 3 template mapping configs
+- 3 retry policies
+- 3 monitoring setups
+- N support UI data sources
+
+Central service:
+- 1 of each
 
 ### 3. The Unified Support UI
 
-With shared library, building a support UI requires querying and merging data from ALL application databases. With central service: one query to one store.
+With shared library, building a support UI that answers "what happened to this email?" requires:
+- Querying Assessment DB
+- Querying Accreditation DB
+- Querying D365/PA DB
+- Merging results from 3 different sources
+- Handling different schemas
+
+With central service: **one query to one store**.
 
 ### 4. Correlation ID Flow
 
-In the central service, the correlation ID flows through the entire pipeline: Caller -> API -> Service Bus -> Function -> Mandrill -> Webhook -> Audit -> CRM. With shared library, correlation IDs are local to each app.
+In the central service, the correlation ID flows through the entire pipeline:
+```
+Caller -> API (assigns correlationId) -> Service Bus -> Function -> Mandrill -> Webhook -> Audit -> CRM
+```
+
+With shared library, correlation IDs are local to each system. There is no way to trace a customer journey that spans Assessment -> D365 -> Accreditation.
 
 ---
 
@@ -234,7 +525,7 @@ In the central service, the correlation ID flows through the entire pipeline: Ca
 
 ### Shared Library Host (Port 5090)
 - Simulates the Assessment Portal bundling the Mandrill library
-- Has its own audit store (in-memory for demo — **in production this would be a separate DB per app**)
+- Has its own audit store (in-memory for demo - **in production this would be a separate DB per app**)
 - Has its own webhook endpoint
 - Shows ONLY Assessment emails in its UI
 - **Run**: `dotnet run --project email-shared-library-host/src/SharedLibrary.Host`
@@ -242,7 +533,7 @@ In the central service, the correlation ID flows through the entire pipeline: Ca
 ### Central Service (Port 5080)
 - One HTTP API for all systems
 - Service Bus integration for async processing
-- Central audit store (in-memory for demo — **in production this would be Azure SQL**)
+- Central audit store (in-memory for demo - **in production this would be Azure SQL**)
 - Unified support UI showing ALL systems
 - **Run**: `dotnet run --project email-central-service/src/CentralApi`
 
@@ -275,7 +566,7 @@ Then use the respective `demo.http` files with VS Code REST Client.
 
 ### Terraform
 
-Full Infrastructure-as-Code is provided in each project''s `infra/` folder.
+Full Infrastructure-as-Code is provided in each project `infra/` folder.
 
 ---
 
@@ -283,10 +574,11 @@ Full Infrastructure-as-Code is provided in each project''s `infra/` folder.
 
 The central email service is the superior architecture because:
 
-1. **It''s the only approach that serves ALL systems** (including D365/PA)
+1. **It is the only approach that serves ALL systems** (including D365/PA)
 2. **It centralizes what should be centralized** (provider integration, audit, webhooks)
-3. **It costs less** (one of each resource vs. N of each)
-4. **It''s simpler to operate** (one service to monitor, update, and debug)
+3. **It costs less** (one of each resource vs. three of each)
+4. **It is simpler to operate** (one service to monitor, update, and debug)
 5. **It enables features impossible with shared library** (unified support UI, end-to-end correlation, consistent retry)
+6. **It can be made highly available** (multi-instance, auto-healing, outbox pattern, break-glass fallback)
 
-The shared library approach seems simpler initially but creates a distributed system where every application owns part of the email platform — and you still need an HTTP API for D365/Power Automate anyway.
+The shared library approach seems simpler initially but creates a distributed system where every application owns part of the email platform - and you still need an HTTP API for D365/Power Automate anyway.
