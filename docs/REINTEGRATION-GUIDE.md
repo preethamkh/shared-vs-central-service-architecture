@@ -71,7 +71,7 @@ under a prefix:
 
 ```powershell
 # from the host repo root
-git remote add transactional-email https://github.com/preethamkh/transactional-email.git
+git remote add transactional-email https://github.com/shared-vs-central-service-architecture.git
 git fetch transactional-email
 
 # bring the main demo in with its full history
