@@ -264,13 +264,41 @@ A solution architect might say: *"We can use a shared database and Key Vault to 
 
 | Pain Point | Still a Problem? | Why |
 |---|---|---|
-| **Duplicated Webhook Handling** | **Yes** | Each system still needs its own webhook endpoint and validation code |
-| **Webhook Broadcasting** | **Yes** | Mandrill sends ALL events to ALL endpoints. Each system still must filter out events from other systems |
-| **Duplicated Dataverse Write-Back** | **Yes** | Each system still needs its own code to create Dataverse Communication activities |
+| **3 Separate Mandrill Calls** | **Yes** | Each system calls Mandrill independently. 3 systems = 3 separate API calls per email sent. |
+| **3 Separate Webhook Endpoints** | **Yes** | Each system hosts its own endpoint. Mandrill must be configured with 3 URLs. |
+| **Duplicated Webhook Handling** | **Yes** | Each system implements webhook validation independently. 3 implementations of the same logic. |
+| **Webhook Broadcasting** | **Yes** | Mandrill sends ALL events to ALL 3 endpoints. Each system receives events from ALL systems and must filter. |
+| **3 Separate Correlation IDs** | **Yes** | Each system generates its own correlation ID. No end-to-end tracing across systems. |
+| **Duplicated Dataverse Write-Back** | **Yes** | Each system implements its own Dataverse Communication activity creation. |
 | **Version Drift Risk** | **Yes** | Each system references its own NuGet package version. They can diverge. |
-| **Blast Radius of Changes** | **Yes** | Mandrill API change requires updating and redeploying all 3 systems |
-| **Inconsistent Retry Logic** | **Yes** | Each system implements its own retry policy |
-| **Shared DB as New SPOF** | **New risk** | If shared DB goes down, ALL systems fail. Worse than central service because the DB is now a critical dependency for ALL systems. |
+| **Blast Radius of Changes** | **Yes** | Mandrill API change requires updating and redeploying all 3 systems. |
+| **Inconsistent Retry Logic** | **Yes** | Each system implements its own retry policy. |
+| **Shared DB as New SPOF** | **New risk** | If shared DB goes down, ALL systems fail. All 3 systems are now coupled to one database. |
+
+### The Shared DB Does NOT Reduce Calls or Endpoints
+
+Even with a shared DB, the shared library approach still requires:
+
+```
+Assessment Portal → calls Mandrill → Mandrill calls Assessment webhook → Assessment filters → writes to shared DB
+Accreditation Portal → calls Mandrill → Mandrill calls Accreditation webhook → Accreditation filters → writes to shared DB
+D365/PA HTTP API → calls Mandrill → Mandrill calls D365/PA webhook → D365/PA filters → writes to shared DB
+```
+
+**3 calls to Mandrill. 3 webhook endpoints. 3 filtering implementations. 3 Dataverse write-backs.**
+
+The shared DB only means they all write to the same place. It does NOT reduce the number of calls, endpoints, or processing logic.
+
+### Central Service: ONE of Everything
+
+```
+Assessment Portal → calls Central API ─┐
+Accreditation Portal → calls Central API ─┼→ Service Bus → Function → calls Mandrill ONCE → webhook → updates DB ONCE
+D365 → calls Central API ─┘
+Power Automate → calls Central API ─┘
+```
+
+**1 call to Mandrill. 1 webhook endpoint. 1 filtering logic (none needed). 1 Dataverse write-back.**
 
 ### The Shared DB Creates a WORSE Single Point of Failure
 
