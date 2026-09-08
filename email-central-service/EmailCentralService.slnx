@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CentralApi/CentralApi.csproj" />
+    <Project Path="src/CentralContracts/CentralContracts.csproj" />
+    <Project Path="src/CentralMandrill/CentralMandrill.csproj" />
+  </Folder>
+</Solution>

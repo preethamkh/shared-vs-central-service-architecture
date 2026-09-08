@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SharedLibrary.Contracts/SharedLibrary.Contracts.csproj" />
+    <Project Path="src/SharedLibrary.Host/SharedLibrary.Host.csproj" />
+    <Project Path="src/SharedLibrary.Mandrill/SharedLibrary.Mandrill.csproj" />
+  </Folder>
+</Solution>

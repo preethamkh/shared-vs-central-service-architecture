@@ -1,0 +1,73 @@
+@host = http://localhost:5080
+@apiKey = demo-key
+@recipient = user@example.com
+
+### 1. Health check
+GET {{host}}/health
+
+### 2. Send from Assessment system
+POST {{host}}/api/v1/email/send
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "templateKey": "AssessmentBooked",
+  "to": [{ "email": "{{recipient}}", "name": "Jane Example" }],
+  "data": {
+    "candidate": { "id": "C-10045", "name": "Jane Example" },
+    "assessment": { "type": "Capability Assessment", "status": "Booked" },
+    "session": { "date": "Monday, 25 August 2026", "location": { "name": "Melbourne" } }
+  },
+  "sourceSystem": "Assessment",
+  "correlationId": "meeting-demo-001"
+}
+
+### 3. Send from Accreditation system (same endpoint!)
+POST {{host}}/api/v1/email/send
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "templateKey": "Welcome",
+  "to": [{ "email": "{{recipient}}", "name": "Jane Example" }],
+  "data": { "candidateName": "Jane Example", "portal": "Accreditation" },
+  "sourceSystem": "Accreditation",
+  "correlationId": "meeting-demo-002"
+}
+
+### 4. Send from Power Automate (same endpoint!)
+POST {{host}}/api/v1/email/send
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "templateKey": "AssessmentBooked",
+  "to": [{ "email": "{{recipient}}", "name": "John Doe" }],
+  "data": { "candidateName": "John Doe", "action": "Reminder" },
+  "sourceSystem": "PowerAutomate",
+  "correlationId": "meeting-demo-003"
+}
+
+### 5. Unified audit search (all systems)
+GET {{host}}/api/v1/activity?search={{recipient}}
+X-Api-Key: {{apiKey}}
+
+### 6. Filter by source system
+GET {{host}}/api/v1/activity?source=Assessment
+X-Api-Key: {{apiKey}}
+
+### 7. Browse templates
+GET {{host}}/api/v1/templates
+X-Api-Key: {{apiKey}}
+
+### 8. Unauthorized request (no API key)
+POST {{host}}/api/v1/email/send
+Content-Type: application/json
+
+{ "templateKey": "Test", "to": [{"email": "{{recipient}}"}], "data": {}, "sourceSystem": "unknown" }
+
+### 9. Simulate Mandrill webhook
+POST {{host}}/api/v1/events/mandrill
+Content-Type: application/json
+
+[{ "event": "delivered", "email": "{{recipient}}", "_id": "mandrill-001" }]
