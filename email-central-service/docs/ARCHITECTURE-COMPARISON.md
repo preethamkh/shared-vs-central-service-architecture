@@ -225,20 +225,84 @@ This means Dataverse write-back logic is DUPLICATED across all 3 systems.
 
 ### Pain Points
 
-| Issue | Impact |
-|---|---|
-| **Secret Sprawl** | Mandrill API key stored in Assessment, Accreditation, AND the D365/PA HTTP API. Rotation requires updating all 3 places simultaneously. |
-| **Duplicated Audit Stores** | 3 separate audit stores (Assessment DB, Accreditation DB, D365/PA DB). Support must query each one separately to investigate issues. |
-| **No Central Correlation** | Correlation IDs are local to each system. Tracing a customer journey across systems is impossible without a unified view. |
-| **Duplicated Webhook Handling** | Assessment, Accreditation, and D365/PA HTTP API each implement Mandrill webhook validation independently. |
-| **Webhook Broadcasting** | Mandrill sends ALL events to ALL registered endpoints. Each system must filter out events from other systems - duplicated filtering logic. |
-| **Duplicated Dataverse Write-Back** | Each system must implement its own logic to create Dataverse Communication activities. |
-| **Template Mapping Duplication** | Template key to Mandrill slug mapping repeated in each system config. Adding a template requires updating all systems. |
-| **Multiple DB Hits** | Each system queries its own template mapping table. With N systems, that is N separate database connections and queries. |
-| **Version Drift Risk** | NuGet package versions can diverge. Assessment might use Mandrill client v1 while Accreditation uses v2. |
-| **Unified UI Complexity** | Building a support UI requires aggregating data from ALL 3 databases - cross-DB queries, data transformation, pagination across sources. |
-| **Blast Radius of Changes** | A Mandrill API change requires updating and redeploying Assessment, Accreditation, AND the D365/PA HTTP API. |
-| **Inconsistent Retry Logic** | Each system implements its own retry policy. Some might retry 3 times, others 5. No consistency. |
+| Issue | Impact | Mitigated by Shared DB + Key Vault? |
+|---|---|---|
+| **Secret Sprawl** | Mandrill API key stored in Assessment, Accreditation, AND the D365/PA HTTP API. Rotation requires updating all 3 places simultaneously. | **Yes** — Key Vault solves this. All systems read from one vault. |
+| **Duplicated Audit Stores** | 3 separate audit stores (Assessment DB, Accreditation DB, D365/PA DB). Support must query each one separately to investigate issues. | **Yes** — shared DB solves this. One audit store for all systems. |
+| **Template Mapping Duplication** | Template key to Mandrill slug mapping repeated in each system config. Adding a template requires updating all systems. | **Yes** — shared DB table solves this. One template mapping table. |
+| **Multiple DB Hits** | Each system queries its own template mapping table. With N systems, that is N separate database connections and queries. | **Partially** — one DB, but still N connections from N systems. |
+| **No Central Correlation** | Correlation IDs are local to each system. Tracing a customer journey across systems is impossible without a unified view. | **Partially** — shared DB helps, but each system still generates its own IDs. |
+| **Duplicated Webhook Handling** | Assessment, Accreditation, and D365/PA HTTP API each implement Mandrill webhook validation independently. | **No** — each system still needs its own webhook endpoint and validation code. |
+| **Webhook Broadcasting** | Mandrill sends ALL events to ALL registered endpoints. Each system must filter out events from other systems - duplicated filtering logic. | **No** — this is a Mandrill behavior. Each endpoint still receives ALL events and must filter. |
+| **Duplicated Dataverse Write-Back** | Each system must implement its own logic to create Dataverse Communication activities. | **No** — each system still needs its own Dataverse write-back code. |
+| **Version Drift Risk** | NuGet package versions can diverge. Assessment might use Mandrill client v1 while Accreditation uses v2. | **No** — each system references its own NuGet package version. |
+| **Unified UI Complexity** | Building a support UI requires aggregating data from ALL 3 databases - cross-DB queries, data transformation, pagination across sources. | **Yes** — shared DB means one query. |
+| **Blast Radius of Changes** | A Mandrill API change requires updating and redeploying Assessment, Accreditation, AND the D365/PA HTTP API. | **No** — Mandrill client code is in each system. Changes require updating all 3. |
+| **Inconsistent Retry Logic** | Each system implements its own retry policy. Some might retry 3 times, others 5. No consistency. | **No** — each system implements its own retry logic. |
+| **Shared DB as New SPOF** | If the shared database goes down, ALL systems fail. | **New risk** — central service can be made HA more easily than a shared DB serving multiple systems. |
+| **Shared DB as New SPOF** | If the shared database goes down, ALL systems fail. | **New risk** — central service can be made HA more easily than a shared DB serving multiple systems. |
+
+---
+
+## Counter-Argument: "What if we use a Shared DB + Key Vault?"
+
+A solution architect might say: *"We can use a shared database and Key Vault to reduce duplication in the shared library approach."*
+
+**This is valid** — it reduces SOME pain points. But it does NOT eliminate all of them.
+
+### What Shared DB + Key Vault Solves
+
+| Pain Point | Solved? | How |
+|---|---|---|
+| Secret Sprawl | **Yes** | All systems read Mandrill key from Key Vault |
+| Duplicated Audit Stores | **Yes** | One shared database for all audit records |
+| Template Mapping Duplication | **Yes** | One shared table for template key → slug mappings |
+| Unified UI Complexity | **Yes** | One database to query for support |
+| Multiple DB Hits | **Partially** | One DB, but still N connections from N systems |
+
+### What Shared DB + Key Vault Does NOT Solve
+
+| Pain Point | Still a Problem? | Why |
+|---|---|---|
+| **Duplicated Webhook Handling** | **Yes** | Each system still needs its own webhook endpoint and validation code |
+| **Webhook Broadcasting** | **Yes** | Mandrill sends ALL events to ALL endpoints. Each system still must filter out events from other systems |
+| **Duplicated Dataverse Write-Back** | **Yes** | Each system still needs its own code to create Dataverse Communication activities |
+| **Version Drift Risk** | **Yes** | Each system references its own NuGet package version. They can diverge. |
+| **Blast Radius of Changes** | **Yes** | Mandrill API change requires updating and redeploying all 3 systems |
+| **Inconsistent Retry Logic** | **Yes** | Each system implements its own retry policy |
+| **Shared DB as New SPOF** | **New risk** | If shared DB goes down, ALL systems fail. Worse than central service because the DB is now a critical dependency for ALL systems. |
+
+### The Shared DB Creates a WORSE Single Point of Failure
+
+**In the shared library approach with shared DB:**
+- If the shared database goes down → **ALL 3 systems fail**
+- Each system is coupled to the same database schema
+- Schema changes require coordinating all 3 systems
+- Database performance issues affect all systems
+
+**In the central service approach:**
+- The central service owns its own database
+- Callers are NOT coupled to the database schema
+- The central service can be made HA (multi-instance, auto-healing, deployment slots)
+- Database changes are internal to the service — callers unaffected
+
+### Summary
+
+| Aspect | Shared Library + Shared DB + Key Vault | Central Service |
+|---|---|---|
+| Secrets | Key Vault (one place) | Key Vault (one place) |
+| Audit store | Shared DB (one store) | Own DB (one store) |
+| Template mapping | Shared table (one place) | Central registry (one place) |
+| Webhook handling | 3 implementations | 1 implementation |
+| Webhook filtering | 3 filtering logics | No filtering needed |
+| Dataverse write-back | 3 implementations | 1 implementation |
+| Version drift risk | Still exists | No drift (one codebase) |
+| Blast radius | Update 3 systems | Update 1 service |
+| Retry consistency | Inconsistent | Consistent |
+| SPOF risk | Shared DB affects all | Service can be made HA |
+| Coupling | Systems coupled to shared DB | Callers decoupled from DB |
+
+**Bottom line**: Shared DB + Key Vault reduces SOME duplication, but the shared library approach still has duplicated webhook handling, webhook filtering, Dataverse write-back, version drift risk, and inconsistent retry logic. The central service eliminates ALL of these in one go.
 
 ### What the Shared Library Gets Right
 
@@ -365,23 +429,28 @@ sequenceDiagram
 
 ## Comparison Matrix
 
-| Criteria | Shared Library | Central Service | Winner |
-|---|---|---|---|
-| **Initial setup complexity** | Low (just add NuGet) | Medium (provision services) | Shared Library |
-| **D365/PA support** | Needs separate HTTP API anyway | Native HTTP API | **Central Service** |
-| **Secret management** | Key in 3 places | Key in one place | **Central Service** |
-| **Audit unification** | Aggregate 3 stores | One store | **Central Service** |
-| **Correlation tracking** | Local only | End-to-end | **Central Service** |
-| **Webhook handling** | 3 implementations + filtering logic | One implementation, no filtering | **Central Service** |
-| **Webhook broadcasting** | Each system receives ALL events, must filter | Single endpoint, no filtering needed | **Central Service** |
-| **Dataverse write-back** | 3 implementations | One implementation | **Central Service** |
-| **Template management** | Duplicated | Centralized | **Central Service** |
-| **Support UI complexity** | Cross-DB aggregation | Single query | **Central Service** |
-| **Operational overhead** | High (3 things to maintain) | Low (one service) | **Central Service** |
-| **Runtime independence** | Systems independent | API is single dependency | Shared Library |
-| **Retry consistency** | Inconsistent | Consistent via Service Bus | **Central Service** |
-| **Cost** | 3 audit stores + 3 webhook endpoints | One of each | **Central Service** |
-| **Vendor lock-in** | Harder to change (3 integrations) | Easier (one integration) | **Central Service** |
+*Note: "Shared Library (optimized)" assumes shared DB + Key Vault to reduce duplication.*
+
+| Criteria | Shared Library (basic) | Shared Library (optimized with Shared DB + Key Vault) | Central Service | Winner |
+|---|---|---|---|---|
+| **Initial setup complexity** | Low | Medium (shared DB + KV setup) | Medium | Shared Library |
+| **D365/PA support** | Needs separate HTTP API | Needs separate HTTP API | Native HTTP API | **Central Service** |
+| **Secret management** | Key in 3 places | Key Vault (one place) | Key Vault (one place) | Tie |
+| **Audit unification** | 3 separate stores | Shared DB (one store) | One store | Tie |
+| **Correlation tracking** | Local only | Local (shared DB helps slightly) | End-to-end | **Central Service** |
+| **Webhook handling** | 3 implementations | 3 implementations (not solved by DB+KV) | One implementation | **Central Service** |
+| **Webhook broadcasting** | Each filters ALL events | Each filters ALL events (not solved) | Single endpoint, no filtering | **Central Service** |
+| **Dataverse write-back** | 3 implementations | 3 implementations (not solved) | One implementation | **Central Service** |
+| **Template management** | Duplicated | Shared table (one place) | Central registry | Tie |
+| **Support UI complexity** | Cross-DB aggregation | Single query | Single query | Tie |
+| **Operational overhead** | High (3 things) | Medium (3 things, shared DB) | Low (one service) | **Central Service** |
+| **Runtime independence** | Systems independent | Systems coupled to shared DB | API is single dependency | Shared Library |
+| **Retry consistency** | Inconsistent | Inconsistent (not solved) | Consistent via Service Bus | **Central Service** |
+| **Version drift risk** | High risk | High risk (not solved) | No drift (one codebase) | **Central Service** |
+| **Blast radius** | Update 3 systems | Update 3 systems (not solved) | Update 1 service | **Central Service** |
+| **Cost** | 3 DBs + 3 endpoints | 1 DB + 3 endpoints | 1 DB + 1 endpoint | **Central Service** |
+| **Vendor lock-in** | 3 integrations | 3 integrations | 1 integration | **Central Service** |
+| **SPOF risk** | Each system independent | Shared DB affects all | Service can be made HA | **Central Service** |
 
 ---
 
